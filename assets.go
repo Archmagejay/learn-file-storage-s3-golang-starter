@@ -22,7 +22,7 @@ func getAssetPath(videoID uuid.UUID, contentType string) string {
 }
 
 func contentTypeToExt(contentType string) any {
-	parts := strings.Split(contentType, "")
+	parts := strings.Split(contentType, "/")
 	if len(parts) != 2 {
 		return ".bin"
 	}
