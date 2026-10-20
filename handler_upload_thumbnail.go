@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -42,14 +42,23 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	mediaType := header.Header.Get("Content-Type")
-	if mediaType == "" {
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
 		respondWithError(w, http.StatusBadRequest, "Missing Content-Type for thumbnail", nil)
+		return
 	}
 
-	rawImageData, err := io.ReadAll(file)
+	thumbnailPath := getAssetPath(videoID, contentType)
+	thumbnailDiskPath := cfg.getAssetDiskPath(thumbnailPath)
+
+	dst, err := os.Create(thumbnailDiskPath)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error reading file", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create thumbnail file on server", err)
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error saving file", err)
 		return
 	}
 
@@ -60,12 +69,16 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	if dbVideo.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized, "Not authorized to update this video", nil)
+		return
+	}
+	if !validThumbnailMimeType(contentType) {
+		respondWithError(w, http.StatusBadRequest, "Uploaded file must be either a jpeg or a png", err)
+		return
 	}
 
-	base64EncodedImage := base64.StdEncoding.EncodeToString(rawImageData)
-	thumbnailDataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, base64EncodedImage)
+	thumbnailUrl := cfg.getAssetURL(thumbnailPath)
+	dbVideo.ThumbnailURL = &thumbnailUrl
 
-	dbVideo.ThumbnailURL = &thumbnailDataURL
 	err = cfg.db.UpdateVideo(dbVideo)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't to update video", err)
@@ -74,3 +87,4 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	respondWithJSON(w, http.StatusOK, dbVideo)
 }
+
