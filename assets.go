@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,12 +35,4 @@ func (cfg *apiConfig) getAssetDiskPath(assetPath string) string {
 
 func (cfg *apiConfig) getAssetURL(assetPath string) string {
 	return fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, assetPath)
-}
-
-func validThumbnailMimeType(contentType string) bool {
-	mimeType, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return false
-	}
-	return (mimeType == "image/jpeg" || mimeType == "image/png")
 }
