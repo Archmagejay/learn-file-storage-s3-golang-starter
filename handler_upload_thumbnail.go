@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -12,6 +12,7 @@ import (
 )
 
 func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
+	// Extract and parse videoID
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
@@ -19,21 +20,20 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Authenticate user and get userID
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
 		return
 	}
-
 	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
 		return
 	}
 
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
-
-	const maxMemory = 10 << 20
+	// Parse file Upload
+	const maxMemory = 10 << 20 // 10 MB
 	r.ParseMultipartForm(maxMemory)
 
 	file, header, err := r.FormFile("thumbnail")
@@ -43,6 +43,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
+	// Validate that the file is either a jpeg or a png
 	contentType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid Content-Type", err)
@@ -53,6 +54,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Save the thumbnail to disk
 	thumbnailPath := getAssetPath(contentType)
 	thumbnailDiskPath := cfg.getAssetDiskPath(thumbnailPath)
 
@@ -67,24 +69,29 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	dbVideo, err := cfg.db.GetVideo(videoID)
+	// Get video metadata from database
+	videoMetadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't find video", err)
 		return
 	}
-	if dbVideo.UserID != userID {
+	if videoMetadata.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized, "Not authorized to update this video", nil)
 		return
 	}
 
+	// Update thumbnailURL
 	thumbnailUrl := cfg.getAssetURL(thumbnailPath)
-	dbVideo.ThumbnailURL = &thumbnailUrl
+	videoMetadata.ThumbnailURL = &thumbnailUrl
 
-	err = cfg.db.UpdateVideo(dbVideo)
+	err = cfg.db.UpdateVideo(videoMetadata)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't to update video", err)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, dbVideo)
+	// Log upload
+	log.Println("uploading thumbnail for video", videoID, "by user", userID)
+
+	respondWithJSON(w, http.StatusOK, videoMetadata)
 }
