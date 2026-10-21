@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
+	"path"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -37,7 +43,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
 		return
 	}
-
 
 	// Get video metadata from database
 	videoMetadata, err := cfg.db.GetVideo(videoID)
@@ -90,11 +95,28 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Get aspect ratio
+	directory := ""
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error determining aspect ratio", err)
+		return
+	}
+	switch aspectRatio {
+	case "16:9":
+		directory = "landscape"
+	case "9:16":
+		directory = "portrait"
+	default:
+		directory = "other"
+	}
+
 	// Put object into s3
-	key := getAssetPath(mediaType)
+	fileKey := getAssetPath(mediaType)
+	fileKey = path.Join(directory, fileKey)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
-		Key:         aws.String(key),
+		Key:         aws.String(fileKey),
 		Body:        tempFile,
 		ContentType: aws.String(mediaType),
 	})
@@ -104,7 +126,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Update VideoURL
-	videoURL := cfg.getObjectURL(key)
+	videoURL := cfg.getObjectURL(fileKey)
 	videoMetadata.VideoURL = &videoURL
 
 	err = cfg.db.UpdateVideo(videoMetadata)
@@ -114,7 +136,50 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Log upload
-	log.Println("uploading video for", videoID, "by user", userID)
+	log.Println("uploading video with", aspectRatio, "aspect ratio for", videoID, "by user", userID)
 
 	respondWithJSON(w, http.StatusOK, videoMetadata)
+}
+
+// Get the aspect ratio of a video
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams",
+		filePath,
+	)
+
+	var cmdStdOut bytes.Buffer
+	cmd.Stdout = &cmdStdOut
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffprobe error: %v", err)
+	}
+
+	var output struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+
+	if err := json.Unmarshal(cmdStdOut.Bytes(), &output); err != nil {
+		return "", fmt.Errorf("could not parse ffprobe output: %v", err)
+	}
+
+	if len(output.Streams) == 0 {
+		return "", errors.New("no video streams found")
+	}
+
+	width := output.Streams[0].Width
+	height := output.Streams[0].Height
+
+	if width == 16*height/9 {
+		return "16:9", nil
+	} else if height == 16*width/9 {
+		return "9:16", nil
+	}
+	return "other", nil
 }
